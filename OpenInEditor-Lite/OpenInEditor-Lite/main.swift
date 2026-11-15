@@ -13,7 +13,7 @@ import OpenInTerminalCore
 do {
 
     if let editorName = DefaultsManager.shared.liteDefaultEditor {
-        let editor = App(name: editorName, type: .editor)
+        let editor = SupportedApps.from(name: editorName)?.app ?? App(name: editorName, type: .editor)
         try editor.openOutsideSandbox()
     } else {
         guard let selectedEditor = pickEditor() else {
@@ -111,8 +111,7 @@ private extension SupportedApps {
 
     /// The real icon of the copy installed on disk, if it can be located.
     var diskIcon: NSImage? {
-        if !bundleId.isEmpty,
-           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+        if let url = installedApplicationURL {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
         // Some supported apps ship without a stable bundle id; look them up by name.
@@ -125,6 +124,6 @@ private extension SupportedApps {
 
     /// The icon bundled with the app (from `Icons.xcassets`), named after the app.
     var bundledIcon: NSImage? {
-        return NSImage(named: name)
+        return NSImage(named: name) ?? NSImage(named: name.lowercased())
     }
 }

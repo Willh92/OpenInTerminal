@@ -6,6 +6,7 @@
 //  Copyright © 2020 Jianing Wang. All rights reserved.
 //
 
+import AppKit
 import Foundation
 
 public enum SupportedApps: String, CaseIterable {
@@ -25,6 +26,7 @@ public enum SupportedApps: String, CaseIterable {
     case fork = "Fork"
     case ghostty = "Ghostty"
     case kaku = "Kaku"
+    case otty = "Otty"
     
     // MARK: - Editors
     case textEdit = "TextEdit"
@@ -74,7 +76,7 @@ public enum SupportedApps: String, CaseIterable {
     
     public var type: AppType {
         switch self {
-        case .terminal, .iTerm, .hyper, .alacritty, .kitty, .wezterm, .tabby, .warp, .cmux, .githubDesktop, .fork, .ghostty, .gitKraken, .kaku:
+        case .terminal, .iTerm, .hyper, .alacritty, .kitty, .wezterm, .tabby, .warp, .cmux, .githubDesktop, .fork, .ghostty, .gitKraken, .kaku, .otty:
             return .terminal
         default:
             return .editor
@@ -118,24 +120,25 @@ public enum SupportedApps: String, CaseIterable {
         case .kitty: return "net.kovidgoyal.kitty"
         case .wezterm: return "com.github.wez.wezterm"
         case .tabby: return "org.tabby"
-        case .warp: return "dev.warp"
+        case .warp: return "dev.warp.Warp-Stable"
         case .cmux: return "com.cmuxterm.app"
-        case .githubDesktop: return ""
+        case .githubDesktop: return "com.github.GitHubClient"
         case .gitKraken: return "com.axosoft.gitkraken"
-        case .fork: return ""
+        case .fork: return "com.DanPristupov.Fork"
         case .ghostty: return "com.mitchellh.ghostty"
         case .kaku: return "fun.tw93.kaku"
+        case .otty: return "io.appmakes.otty"
         // Editors
         case .textEdit: return "com.apple.TextEdit"
         case .xcode: return "com.apple.Xcode"
         case .vscode: return "com.microsoft.VSCode"
         case .atom: return "com.github.atom"
-        case .sublime: return "com.sublimetext.3"
+        case .sublime: return "com.sublimetext.4"
         case .vscodium: return "com.visualstudio.code.oss"
         case .bbedit: return "com.barebones.bbedit"
         case .vscodeInsiders: return "com.microsoft.VSCodeInsiders"
         case .textMate: return "com.macromates.TextMate"
-        case .cotEditor: return ""
+        case .cotEditor: return "com.coteditor.CotEditor"
         case .macVim: return "org.vim.MacVim"
         case .typora: return "abnerworks.Typora"
         case .nova: return "com.panic.Nova"
@@ -149,16 +152,73 @@ public enum SupportedApps: String, CaseIterable {
         case .pyCharm: return "com.jetbrains.pycharm"
         case .rubyMine: return "com.jetbrains.rubymine"
         case .webStorm: return "com.jetbrains.webstorm"
-        case .androidstudio: return ""
+        case .androidstudio: return "com.google.android.studio"
         case .neovim: return ""
-        case .zed: return ""
+        case .zed: return "dev.zed.Zed"
         case .emacs: return "org.gnu.Emacs"
         }
+    }
+
+    /// Alternate bundle identifiers for Community Edition / Preview / legacy releases.
+    public var alternateBundleIds: [String] {
+        switch self {
+        case .alacritty:
+            return ["org.alacritty"]
+        case .wezterm:
+            return ["org.wezfurlong.wezterm"]
+        case .warp:
+            return ["dev.warp", "dev.warp.Warp-Preview"]
+        case .sublime:
+            return ["com.sublimetext.3", "com.sublimetext.2"]
+        case .intelliJIDEA:
+            return ["com.jetbrains.intellij.ce", "com.jetbrains.intellij-EAP"]
+        case .pyCharm:
+            return ["com.jetbrains.pycharm.ce", "com.jetbrains.pycharm-EAP"]
+        case .zed:
+            return ["dev.zed.Zed-Preview"]
+        default:
+            return []
+        }
+    }
+
+    public var allBundleIds: [String] {
+        return ([bundleId] + alternateBundleIds).filter { !$0.isEmpty }
+    }
+
+    /// Resolves the bundle identifier of whichever edition is currently installed on disk.
+    public var resolvedBundleId: String? {
+        for candidate in allBundleIds {
+            if NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate) != nil {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Resolves the on-disk `.app` bundle URL via Launch Services.
+    public var installedApplicationURL: URL? {
+        for candidate in allBundleIds {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Builds a `warp://action/new_window?path=...` deep link so Warp opens a single window
+    /// instead of both a startup `~` window and a target folder window on cold launch (#230).
+    public static func warpURI(forPath path: String, newTab: Bool = false) -> URL? {
+        var components = URLComponents()
+        components.scheme = "warp"
+        components.host = "action"
+        components.path = newTab ? "/new_tab" : "/new_window"
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return components.url
     }
     
     public var app: App {
         var app = App(name: self.name, type: self.type)
-        app.bundleId = self.bundleId
+        app.bundleId = self.resolvedBundleId ?? self.bundleId
         return app
     }
 }

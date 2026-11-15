@@ -13,38 +13,74 @@ public class FinderManager {
     
     public static var shared = FinderManager()
     
+    private func normalizeFinderURL(_ rawURLString: String) -> URL? {
+        if rawURLString.hasPrefix("/") {
+            return URL(fileURLWithPath: rawURLString).resolvingFinderAlias()
+        }
+        if let url = URL(string: rawURLString) {
+            let fileURL = (url as NSURL).filePathURL ?? url
+            return fileURL.resolvingFinderAlias()
+        }
+        if let encoded = rawURLString.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+           let url = URL(string: encoded) {
+            let fileURL = (url as NSURL).filePathURL ?? url
+            return fileURL.resolvingFinderAlias()
+        }
+        return nil
+    }
+
+    /// Fallback via AppleScript `POSIX path` for volume roots (`FinderDisk` on `/Volumes/...`)
+    /// or Finder items whose ScriptingBridge `.URL` property is nil (#212).
+    private func queryFinderURLsViaAppleScript() -> [URL] {
+        let source = """
+        tell application "Finder"
+            set outPaths to {}
+            try
+                set selList to selection as alias list
+                if selList is not {} then
+                    repeat with anItem in selList
+                        set end of outPaths to POSIX path of anItem
+                    end repeat
+                    return outPaths
+                end if
+            end try
+            try
+                if (count of Finder windows) > 0 then
+                    set winTarget to target of front Finder window as alias
+                    set end of outPaths to POSIX path of winTarget
+                end if
+            end try
+            return outPaths
+        end tell
+        """
+        guard let script = NSAppleScript(source: source) else {
+            return []
+        }
+        var error: NSDictionary?
+        let descriptor = script.executeAndReturnError(&error)
+        if error != nil {
+            return []
+        }
+        let count = descriptor.numberOfItems
+        guard count > 0 else {
+            if let single = descriptor.stringValue, !single.isEmpty {
+                return [URL(fileURLWithPath: single).resolvingFinderAlias()]
+            }
+            return []
+        }
+        var urls: [URL] = []
+        for idx in 1...count {
+            if let posixPath = descriptor.atIndex(idx)?.stringValue, !posixPath.isEmpty {
+                urls.append(URL(fileURLWithPath: posixPath).resolvingFinderAlias())
+            }
+        }
+        return urls
+    }
+
     /// Get full url to front Finder window or selected file
     public func getFullUrlToFrontFinderWindowOrSelectedFile() throws -> URL? {
-
-        let finder = SBApplication(bundleIdentifier: Constants.Id.Finder)! as FinderApplication
-        
-        var target: FinderItem
-        
-        guard let selection = finder.selection,
-            let selectionItems = selection.get() else {
-                throw OITError.cannotAccessFinder
-        }
-        
-        if let firstItem = (selectionItems as! Array<AnyObject>).first {
-            // Files or folders selected
-            target = firstItem as! FinderItem
-        } else {
-            // Check if there are finder windows opened
-            guard let windows = finder.FinderWindows?(),
-                let firstWindow = windows.firstObject else {
-                    print("No Finder windows are opened or selected")
-                    return nil
-            }
-            target = (firstWindow as! FinderFinderWindow).target?.get() as! FinderItem
-        }
-        
-        guard let targetUrl = target.URL,
-            let url = URL(string: targetUrl) else {
-                print("target url nil")
-                return nil
-        }
-        
-        return url
+        let urls = try getFullUrlsToFrontFinderWindowOrSelectedFile()
+        return urls.first
     }
     
     /// Get full path to front Finder window or selected file
@@ -57,77 +93,79 @@ public class FinderManager {
     
     /// Get full urls to front Finder windows or selected files
     public func getFullUrlsToFrontFinderWindowOrSelectedFile() throws -> [URL] {
-        
-        let finder = SBApplication(bundleIdentifier: Constants.Id.Finder)! as FinderApplication
-        
-        var targets: [FinderItem]
+        guard let finderObject = SBApplication(bundleIdentifier: Constants.Id.Finder) else {
+            throw OITError.cannotAccessFinder
+        }
+        let finder = finderObject as FinderApplication
         
         guard let selection = finder.selection,
-            let selectionItems = selection.get() else {
-                throw OITError.cannotAccessFinder
-        }
-        
-        if let items = selectionItems as? Array<FinderItem>,
-            items.count > 0 {
-            // Files or folders are selected
-            targets = items
-        } else {
-            // Check if there are opened finder windows
-            guard let windows = finder.FinderWindows?(),
-                let firstWindow = windows.firstObject else {
-                    print("No Finder windows are opened or selected")
-                    return []
+              let selectionItems = selection.get() else {
+            let fallback = queryFinderURLsViaAppleScript()
+            if !fallback.isEmpty {
+                return fallback
             }
-            let topFinderWindow = (firstWindow as! FinderFinderWindow).target?.get() as! FinderItem
-            targets = [topFinderWindow]
+            throw OITError.cannotAccessFinder
         }
         
-        let paths = targets.compactMap {
-            $0.URL
-        }.compactMap {
-            URL(string: $0)
+        var resolvedURLs: [URL] = []
+        if let rawItems = selectionItems as? [AnyObject], !rawItems.isEmpty {
+            // Files or folders are selected
+            for item in rawItems {
+                if let finderItem = item as? FinderItem,
+                   let urlString = finderItem.URL,
+                   let url = normalizeFinderURL(urlString) {
+                    resolvedURLs.append(url)
+                }
+            }
+            if resolvedURLs.isEmpty {
+                resolvedURLs = queryFinderURLsViaAppleScript()
+            }
+            return resolvedURLs
         }
-        
-        return paths
+
+        // Check if there are opened finder windows
+        guard let windows = finder.FinderWindows?(),
+              let firstWindow = windows.firstObject else {
+            return []
+        }
+
+        if let finderWindow = firstWindow as? FinderFinderWindow,
+           let targetObject = finderWindow.target?.get(),
+           let targetItem = targetObject as? FinderItem,
+           let urlString = targetItem.URL,
+           let url = normalizeFinderURL(urlString) {
+            return [url]
+        }
+
+        return queryFinderURLsViaAppleScript()
     }
     
     /// Get full paths to front Finder windows or selected files
     public func getFullPathsToFrontFinderWindowOrSelectedFile() throws -> [String] {
         let urls = try getFullUrlsToFrontFinderWindowOrSelectedFile()
-        let paths = urls.map {
-            $0.path
-        }
-        return paths
+        return urls.map { $0.path }
     }
     
     /// Get path to front Finder window or selected file.
     /// If the selected one is file, return it's parent path.
     public func getPathToFrontFinderWindowOrSelectedFile() throws -> String {
-        
-        guard let fullUrl = try getFullUrlToFrontFinderWindowOrSelectedFile() else {
+        guard var fullUrl = try getFullUrlToFrontFinderWindowOrSelectedFile() else {
             return ""
         }
-        
-        var isDirectory: ObjCBool = false
-        
-        guard FileManager.default.fileExists(atPath: fullUrl.path, isDirectory: &isDirectory) else {
-            print("file does not exist")
+        fullUrl.getDirectory()
+        guard FileManager.default.fileExists(atPath: fullUrl.path) else {
             return ""
         }
-        
-        // if the selected is a file, then delete last path component
-        guard isDirectory.boolValue else {
-            return fullUrl.deletingLastPathComponent().path
-        }
-        
         return fullUrl.path
     }
     
     public func getDesktopPath() -> String? {
-        let homePath = NSHomeDirectory()
-        guard let homeUrl = URL(string: homePath) else { return nil }
-        let desktopPath = homeUrl.appendingPathComponent("Desktop").path
-        return desktopPath
+        if let desktopURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first {
+            return desktopURL.path
+        }
+        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Desktop", isDirectory: true)
+            .path
     }
     
     /// Get all installed applications' names
@@ -140,111 +178,109 @@ public class FinderManager {
         if isCommandLineToolInstalled("nvim") {
             applications.insert("Neovim")
         }
-        // search
-        do {
-            var searchDirs: Set<URL> = Set()
-            let fileManager = FileManager.default
-            // search `/Applications`
-            let applicationDir = "/Applications"
-            if let applicationURL = URL(string: applicationDir) {
-                searchDirs.insert(applicationURL)
+        // Query Launch Services for all known SupportedApps bundle IDs (including Community Editions,
+        // Homebrew/Nix locations, Setapp, and JetBrains Toolbox installs).
+        for supported in SupportedApps.allCases where supported.installedApplicationURL != nil {
+            applications.insert(supported.name)
+        }
+
+        let fileManager = FileManager.default
+        var searchDirs: Set<URL> = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true),
+        ]
+        for userAppDir in fileManager.urls(for: .applicationDirectory, in: .userDomainMask) {
+            searchDirs.insert(userAppDir)
+        }
+        if let libDirURL = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            let toolboxURL = libDirURL
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("JetBrains", isDirectory: true)
+                .appendingPathComponent("Toolbox", isDirectory: true)
+            if fileManager.fileExists(atPath: toolboxURL.path) {
+                searchDirs.insert(toolboxURL)
             }
-            // search `$HOME/Applications`
-            let userApplicationDirURL = fileManager.urls(for: .applicationDirectory, in: .userDomainMask)
-            if userApplicationDirURL.count > 0 {
-                searchDirs.insert(userApplicationDirURL[0])
-            }
-            // search `$HOME/Library/Application Support/JetBrains/Toolbox
-            let libraryDirURL = fileManager.urls(for: .libraryDirectory, in: .userDomainMask)
-            if libraryDirURL.count > 0 {
-                let libDirURL = libraryDirURL[0]
-                let toolboxURL = libDirURL.appendingPathComponent("Application Support")
-                    .appendingPathComponent("JetBrains")
-                    .appendingPathComponent("Toolbox")
-                if fileManager.fileExists(atPath: toolboxURL.path) {
-                    searchDirs.insert(toolboxURL)
+        }
+
+        let skippedBundleExtensions: Set<String> = ["app", "framework", "bundle", "plugin", "appex", "xcodeproj", "xcworkspace"]
+        var visitedDirs: Set<String> = Set()
+        var levelCount = 0
+
+        while !searchDirs.isEmpty && levelCount < 20 {
+            levelCount += 1
+            var nextSearchDirs: Set<URL> = Set()
+
+            for currentDir in searchDirs {
+                let canonicalDir = currentDir.resolvingSymlinksInPath().standardizedFileURL.path
+                if visitedDirs.contains(canonicalDir) {
+                    continue
                 }
-            }
-            
-            var levelCount = 0
-            
-            while !searchDirs.isEmpty {
-                // to avoid an infinite loop
-                levelCount += 1
-                if levelCount > 20 {
-                    break
+                visitedDirs.insert(canonicalDir)
+
+                guard let fileURLs = try? fileManager.contentsOfDirectory(
+                    at: currentDir,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isAliasFileKey, .isPackageKey],
+                    options: [.skipsHiddenFiles]
+                ) else {
+                    continue
                 }
-                
-                var tmpSearchDirs = searchDirs
-                for currentDir in searchDirs {
-                    let fileURLs = try fileManager.contentsOfDirectory(at: currentDir, includingPropertiesForKeys: nil)
-                    for fileURL in fileURLs {
-                        // skip the hidden
-                        let baseName = fileURL.lastPathComponent
-                        if baseName.hasPrefix(".") {
-                            continue
-                        }
-                        // add to applications
-                        if baseName.hasSuffix(".app") {
-                            var appName = fileURL.deletingPathExtension().lastPathComponent
-                            
-                            // nixpkgs fixes
-                            do {
-                                // iTerm is installed as iTerm2.app
-                                if appName == "iTerm2" {
-                                    appName = "iTerm"
-                                }
-                                // IntelliJ IDEA and PyCharm community edition have CE appended
-                                else if appName == "IntelliJ IDEA CE" {
-                                    appName = "IntelliJ IDEA"
-                                } else if appName == "PyCharm CE" {
-                                    appName = "PyCharm"
-                                }
-                            }
-                            
-                            applications.insert(appName)
-                            continue
-                        }
-                        // add subdirectory to searchDirs
-                        var isDir : ObjCBool = false
-                        if fileManager.fileExists(atPath: fileURL.path, isDirectory:&isDir) {
-                            if isDir.boolValue {
-                                // file exists and is a directory
-                                
-                                // check if it is a alias
-                                var isAlias: AnyObject? = nil
-                                do {
-                                    try (fileURL as NSURL).getResourceValue(&isAlias, forKey: URLResourceKey.isAliasFileKey)
-                                } catch _ {}
-                                if let isAlias = isAlias as? Bool {
-                                    // for nix-darwin users, applications installed through nix will be installed into a symlinked (alias) directory called "Nix Apps"
-                                    if fileURL.lastPathComponent == "Nix Apps" {
-                                        // symlink needs to be resolved first
-                                        tmpSearchDirs.insert(URL(string: try fileManager.destinationOfSymbolicLink(atPath: fileURL.absoluteString.removingPercentEncoding!.replacingOccurrences(of: "file://", with: "")))!)
-                                    }
-                                    // skip alias directory
-                                    else if !isAlias {
-                                        tmpSearchDirs.insert(fileURL)
-                                    }
-                                }
-                            } else {
-                                // file exists and is not a directory
-                            }
-                        } else {
-                            // file does not exist
+
+                for fileURL in fileURLs {
+                    let baseName = fileURL.lastPathComponent
+                    let ext = fileURL.pathExtension.lowercased()
+
+                    if ext == "app" {
+                        let rawAppName = fileURL.deletingPathExtension().lastPathComponent
+                        applications.insert(Self.normalizedInstalledAppName(rawAppName))
+                        continue
+                    }
+
+                    if skippedBundleExtensions.contains(ext) {
+                        continue
+                    }
+
+                    // Resolve symlinks (such as nix-darwin's "Nix Apps" directory) safely without force-unwraps
+                    let candidateURL: URL
+                    let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isAliasFileKey, .isPackageKey])
+                    if values?.isPackage == true {
+                        continue
+                    }
+                    if values?.isSymbolicLink == true || baseName == "Nix Apps" {
+                        candidateURL = fileURL.resolvingSymlinksInPath()
+                    } else if values?.isAliasFile == true {
+                        continue
+                    } else {
+                        candidateURL = fileURL
+                    }
+
+                    var isDir: ObjCBool = false
+                    if fileManager.fileExists(atPath: candidateURL.path, isDirectory: &isDir), isDir.boolValue {
+                        let resolvedPath = candidateURL.resolvingSymlinksInPath().standardizedFileURL.path
+                        if !visitedDirs.contains(resolvedPath) {
+                            nextSearchDirs.insert(candidateURL)
                         }
                     }
-                    tmpSearchDirs.remove(currentDir)
                 }
-                searchDirs = tmpSearchDirs
             }
-            
-        } catch {
-            print(error.localizedDescription)
-            logw(error.localizedDescription)
+
+            searchDirs = nextSearchDirs
         }
         
         return applications
+    }
+
+    private static func normalizedInstalledAppName(_ appName: String) -> String {
+        switch appName {
+        case "iTerm2":
+            return "iTerm"
+        case "IntelliJ IDEA CE", "IntelliJ IDEA Community Edition", "IntelliJ IDEA Ultimate":
+            return "IntelliJ IDEA"
+        case "PyCharm CE", "PyCharm Community Edition", "PyCharm Professional", "PyCharm Professional Edition":
+            return "PyCharm"
+        default:
+            return appName
+        }
     }
 
     /// Check whether a command-line tool is actually installed, by looking in the

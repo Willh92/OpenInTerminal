@@ -71,8 +71,8 @@ class StatusMenuController: NSObject, NSMenuDelegate {
     }
     
     func assignKeyboardShortcutToMenuItem(_ menuItem: NSMenuItem, userDefaultsKey key: String) {
-        if let shortcutDict = Defaults.value(forKey: key),
-           let shortcut = Shortcut(dictionary: shortcutDict as! [AnyHashable : Any]) {
+        if let shortcutDict = Defaults.value(forKey: key) as? [AnyHashable: Any],
+           let shortcut = Shortcut(dictionary: shortcutDict) {
             menuItem.keyEquivalentModifierMask = shortcut.modifierFlags
             // Use the base key (without modifiers applied) for the keyEquivalent; the
             // modifiers are already conveyed by keyEquivalentModifierMask. Passing
@@ -105,7 +105,8 @@ class StatusMenuController: NSObject, NSMenuDelegate {
     }
     
     @IBAction func quit(_ sender: NSMenuItem) {
-        LaunchNotifier.postNotification(.terminateApp, object: Bundle.main.bundleIdentifier!)
+        let hostId = Bundle.main.bundleIdentifier ?? "wang.jianing.app.OpenInTerminal"
+        LaunchNotifier.postNotification(.terminateApp, object: hostId)
         NSApp.terminate(self)
     }
     

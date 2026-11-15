@@ -181,7 +181,7 @@ class CustomPreferencesViewController: PreferencesViewController {
               action: #selector(selectSupportedApp),
               keyEquivalent: "")
             menuItem.target = self
-            menuItem.image = NSImage(named: $0)
+            menuItem.image = NSImage(named: $0) ?? NSImage(named: $0.lowercased())
             menuItem.image?.size = NSSize(width: 14, height: 14)
             installedSupportedMenu.addItem(menuItem)
         }
@@ -197,7 +197,7 @@ class CustomPreferencesViewController: PreferencesViewController {
                                       action: #selector(selectSupportedApp),
                                       keyEquivalent: "")
             menuItem.target = self
-            menuItem.image = NSImage(named: $0.name)
+            menuItem.image = NSImage(named: $0.name) ?? NSImage(named: $0.name.lowercased())
             menuItem.image?.size = NSSize(width: 14, height: 14)
             supportedMenu.addItem(menuItem)
         }

@@ -6,6 +6,7 @@
 //  Copyright © 2020 Jianing Wang. All rights reserved.
 //
 
+import AppKit
 import Foundation
 import ScriptingBridge
 
@@ -70,17 +71,25 @@ extension App: Openable {
                 path = desktopPath
             }
 
-            if SupportedApps.is(self, is: .terminal) {
-                // this app is supported: Terminal
+            if SupportedApps.is(self, is: .warp),
+               let warpURL = SupportedApps.warpURI(forPath: path, newTab: false) {
+                try runOpen([warpURL.absoluteString])
+            } else if SupportedApps.is(self, is: .terminal) {
                 let url = URL(fileURLWithPath: path)
-                guard let terminal = SBApplication(bundleIdentifier: SupportedApps.terminal.bundleId) as TerminalApplication?,
-                      let open = terminal.open else {
-                    throw OITError.cannotAccessApp(self.name)
+                if DefaultsManager.shared.getNewOption(.terminal) == .tab,
+                   let script = NSAppleScript(source: ScriptManager.shared.getTerminalNewTabAppleScript(url: url)) {
+                    var error: NSDictionary?
+                    script.executeAndReturnError(&error)
+                    if error == nil {
+                        return
+                    }
+                    logw("Terminal new-tab AppleScript failed, falling back to Launch Services: \(String(describing: error))")
                 }
-                open([url])
-                terminal.activate()
+                // Launch Services (`open -b com.apple.Terminal <path>`) opens the target folder
+                // directly without requiring Terminal Automation TCC (#278).
+                try runOpen(["-b", SupportedApps.terminal.bundleId, path])
             } else {
-                // this app is general (e.g. iTerm, Alacritty, kitty)
+                // this app is general (e.g. iTerm, Alacritty, kitty, Ghostty)
                 var arguments = DefaultsManager.shared.getOpenArguments(self)
                 arguments.append(path)
                 try runOpen(arguments)
@@ -108,6 +117,45 @@ extension App: Openable {
     }
     
     public func openInSandbox(_ urls: [URL]) throws {
+        let resolvedURLs = urls.map { $0.resolvingFinderAlias() }
+        guard !resolvedURLs.isEmpty else { return }
+
+        let targetURLs: [URL]
+        switch self.type {
+        case .terminal:
+            var dirURL = resolvedURLs[0]
+            dirURL.getDirectory()
+            targetURLs = [dirURL]
+        case .editor:
+            targetURLs = resolvedURLs
+        }
+
+        // Warp cold-start single-window fix (#230): open `warp://action/new_window?path=...`
+        if self.type == .terminal,
+           SupportedApps.is(self, is: .warp),
+           let warpURL = SupportedApps.warpURI(forPath: targetURLs[0].path, newTab: false),
+           NSWorkspace.shared.open(warpURL) {
+            return
+        }
+
+        // Terminal new-tab option
+        if self.type == .terminal,
+           SupportedApps.is(self, is: .terminal),
+           DefaultsManager.shared.getNewOption(.terminal) == .tab,
+           let tabScriptURL = ScriptManager.shared.getScriptURL(with: Constants.terminalNewTabScript),
+           FileManager.default.fileExists(atPath: tabScriptURL.path),
+           let tabTask = try? NSUserAppleScriptTask(url: tabScriptURL) {
+            let appCopy = self
+            let event = ScriptManager.shared.getScriptEvent(functionName: "openApp", arguments: [targetURLs[0].path])
+            tabTask.execute(withAppleEvent: event) { _, error in
+                if let error = error {
+                    logw("Terminal new-tab script failed: \(error)")
+                    appCopy.openViaWorkspaceFallback(targetURLs: targetURLs)
+                }
+            }
+            return
+        }
+
         // Build the invocation as a list of discrete arguments — the leading
         // program, the app-specific option tokens (trusted config from
         // getOpenArguments), then the raw target paths as individual elements.
@@ -116,15 +164,15 @@ extension App: Openable {
         // file/folder name cannot inject shell commands. This mirrors the
         // argument-array approach used by openOutsideSandbox.
         var arguments = ["/usr/bin/open"]
-        arguments.append(contentsOf: DefaultsManager.shared.getOpenArguments(self))
+        let openArgs = DefaultsManager.shared.getOpenArguments(self)
+        arguments.append(contentsOf: openArgs)
+        let usesCustomCLIArgs = openArgs.contains("--args")
 
         switch self.type {
         case .terminal:
-            guard var url = urls.first else { return }
-            url.getDirectory()
-            arguments.append(url.path)
+            arguments.append(targetURLs[0].path)
         case .editor:
-            let paths = urls.map { $0.path }
+            let paths = targetURLs.map { $0.path }
             // fix for neovim: the command template carries a "PATH" placeholder
             // token that must be replaced by the actual path arguments.
             if SupportedApps.is(self, is: .neovim) {
@@ -134,15 +182,62 @@ extension App: Openable {
             }
         }
 
-        // script
-        guard let scriptURL = ScriptManager.shared.getScriptURL(with: Constants.generalScript) else { return }
-        // excute
-        guard FileManager.default.fileExists(atPath: scriptURL.path) else { return }
-        guard let script = try? NSUserAppleScriptTask(url: scriptURL) else { return }
-        let event = ScriptManager.shared.getScriptEvent(functionName: "openApp", arguments: arguments)
-        script.execute(withAppleEvent: event) { (appleEvent, error) in
+        let appCopy = self
+        if let scriptURL = ScriptManager.shared.getScriptURL(with: Constants.generalScript),
+           FileManager.default.fileExists(atPath: scriptURL.path),
+           let script = try? NSUserAppleScriptTask(url: scriptURL) {
+            let event = ScriptManager.shared.getScriptEvent(functionName: "openApp", arguments: arguments)
+            script.execute(withAppleEvent: event) { _, error in
+                if let error = error {
+                    logw("cannot execute applescript: \(error)")
+                    if !usesCustomCLIArgs {
+                        appCopy.openViaWorkspaceFallback(targetURLs: targetURLs)
+                    }
+                }
+            }
+        } else if !usesCustomCLIArgs {
+            openViaWorkspaceFallback(targetURLs: targetURLs)
+        } else {
+            logw("AppleScript runner not installed yet for CLI-arg app: \(self.name)")
+        }
+    }
+
+    private func openViaWorkspaceFallback(targetURLs: [URL]) {
+        let appURL: URL? = {
+            if let supported = SupportedApps.from(name: self.name),
+               let url = supported.installedApplicationURL {
+                return url
+            }
+            if let bundleId = self.bundleId, !bundleId.isEmpty,
+               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+                return url
+            }
+            if let appPath = self.path, !appPath.isEmpty,
+               FileManager.default.fileExists(atPath: appPath) {
+                return URL(fileURLWithPath: appPath)
+            }
+            let candidates = [
+                "/Applications/\(self.name).app",
+                "/System/Applications/\(self.name).app",
+                "/System/Applications/Utilities/\(self.name).app",
+                (NSHomeDirectory() as NSString).appendingPathComponent("Applications/\(self.name).app"),
+            ]
+            for candidate in candidates where FileManager.default.fileExists(atPath: candidate) {
+                return URL(fileURLWithPath: candidate)
+            }
+            return nil
+        }()
+
+        guard let resolvedAppURL = appURL else {
+            logw("Workspace fallback could not locate application: \(self.name)")
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open(targetURLs, withApplicationAt: resolvedAppURL, configuration: configuration) { _, error in
             if let error = error {
-                logw("cannot execute applescript: \(error)")
+                logw("Workspace fallback failed for \(self.name): \(error.localizedDescription)")
             }
         }
     }

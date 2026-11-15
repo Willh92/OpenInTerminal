@@ -15,15 +15,28 @@ class FinderSync: FIFinderSync {
     
     override init() {
         super.init()
+        SharedPreferences.refreshExtension(force: true)
         let finderSync = FIFinderSyncController.default()
+        var watchedURLs: Set<URL> = [URL(fileURLWithPath: "/", isDirectory: true)]
         if let mountedVolumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) {
-            finderSync.directoryURLs = Set<URL>(mountedVolumes)
+            watchedURLs.formUnion(mountedVolumes)
         }
+        finderSync.directoryURLs = watchedURLs
+
         // Monitor volumes
         let notificationCenter = NSWorkspace.shared.notificationCenter
         notificationCenter.addObserver(forName: NSWorkspace.didMountNotification, object: nil, queue: .main) { notification in
             if let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
-                finderSync.directoryURLs.insert(volumeURL)
+                var urls = finderSync.directoryURLs ?? Set<URL>()
+                urls.insert(volumeURL)
+                finderSync.directoryURLs = urls
+            }
+        }
+        notificationCenter.addObserver(forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main) { notification in
+            if let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
+                var urls = finderSync.directoryURLs ?? Set<URL>()
+                urls.remove(volumeURL)
+                finderSync.directoryURLs = urls
             }
         }
     }
@@ -39,16 +52,18 @@ class FinderSync: FIFinderSync {
     }
     
     override var toolbarItemImage: NSImage {
-        return NSImage(named: "Icon")!
+        return NSImage(named: "Icon") ?? NSImage()
     }
     
     override func menu(for menuKind: FIMenuKind) -> NSMenu {
+        SharedPreferences.refreshExtension()
         var menu = NSMenu(title: "")
         
         switch menuKind {
 
         case .contextualMenuForContainer,
-             .contextualMenuForItems:
+             .contextualMenuForItems,
+             .contextualMenuForSidebar:
             // need to hide or not
             let isHideContextMenuItems = DefaultsManager.shared.isHideContextMenuItems
             guard !isHideContextMenuItems else { return NSMenu() }
@@ -81,7 +96,7 @@ class FinderSync: FIFinderSync {
     }
     
     var scriptPath: URL? {
-        return try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        return try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
     }
 
     func fileScriptPath(fileName: String) -> URL? {
@@ -96,6 +111,7 @@ class FinderSync: FIFinderSync {
                                                                    comment: "Copy path to Clipboard"),
                                                 action: #selector(copyPathToClipboard),
                                                 keyEquivalent: "")
+            copyPathItem.target = self
             if DefaultsManager.shared.customMenuIconOption == .simple {
                 let copyPathIcon = NSImage(named: "context_menu_icon_path")
                 copyPathItem.image = copyPathIcon
@@ -124,20 +140,22 @@ class FinderSync: FIFinderSync {
         // menu that will be attached under a single top level item
         let itemsMenu = useSubmenu ? NSMenu(title: "") : menu
 
-        guard let terminal = DefaultsManager.shared.defaultTerminal else { return menu }
+        let terminal = DefaultsManager.shared.defaultTerminal ?? SupportedApps.terminal.app
         let terminalTitle = terminal.name
         let openInTerminalItem = NSMenuItem(title: terminalTitle,
                                             action: #selector(openDefaultTerminal),
                                             keyEquivalent: "")
+        openInTerminalItem.target = self
         let terminalIcon = DefaultsManager.shared.getAppIcon(terminal)
         openInTerminalItem.image = terminalIcon
         itemsMenu.addItem(openInTerminalItem)
 
-        guard let editor = DefaultsManager.shared.defaultEditor else { return menu }
+        let editor = DefaultsManager.shared.defaultEditor ?? SupportedApps.textEdit.app
         let editorTitle = editor.name
         let openInEditorItem = NSMenuItem(title: editorTitle,
                                             action: #selector(openDefaultEditor),
                                             keyEquivalent: "")
+        openInEditorItem.target = self
         let editorIcon = DefaultsManager.shared.getAppIcon(editor)
         openInEditorItem.image = editorIcon
         itemsMenu.addItem(openInEditorItem)
@@ -154,22 +172,24 @@ class FinderSync: FIFinderSync {
     }
 
     func createCustomMenu(useSubmenu: Bool) -> NSMenu {
-        let menu = NSMenu(title: "")
-
-        // get saved custom apps
-        guard let customApps = DefaultsManager.shared.customMenuOptions else {
-            return menu
+        // Fall back to default menu if custom menu list is empty or not configured yet
+        guard let customApps = DefaultsManager.shared.customMenuOptions, !customApps.isEmpty else {
+            return createDefaultMenu(useSubmenu: useSubmenu)
         }
+
+        let menu = NSMenu(title: "")
 
         // when submenu grouping is enabled, add the items into a separate
         // menu that will be attached under a single top level item
         let itemsMenu = useSubmenu ? NSMenu(title: "") : menu
 
-        customApps.forEach { app in
+        for (index, app) in customApps.enumerated() {
             let itemTitle = app.name
             let menuItem = NSMenuItem(title: itemTitle,
                                       action: #selector(customMenuItemClicked),
                                       keyEquivalent: "")
+            menuItem.target = self
+            menuItem.tag = index
             let appIcon = DefaultsManager.shared.getAppIcon(app)
             menuItem.image = appIcon
             itemsMenu.addItem(menuItem)
@@ -190,12 +210,15 @@ class FinderSync: FIFinderSync {
     
     func getSelectedPathsFromFinder() -> [URL] {
         var urls = [URL]()
-        if let items = FIFinderSyncController.default().selectedItemURLs(), items.count > 0 {
-            items.forEach {
-                urls.append($0)
-            }
+        if let items = FIFinderSyncController.default().selectedItemURLs(), !items.isEmpty {
+            urls.append(contentsOf: items)
         } else if let url = FIFinderSyncController.default().targetedURL() {
             urls.append(url)
+        } else if let desktopPath = FinderManager.shared.getDesktopPath() {
+            // Smart folders such as "Recents" report nil `targetedURL()`; fall back to Desktop
+            urls.append(URL(fileURLWithPath: desktopPath, isDirectory: true))
+        } else {
+            urls.append(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
         }
         return urls
     }
@@ -209,73 +232,38 @@ class FinderSync: FIFinderSync {
         }
     }
     
-//    func openTerminal(_ terminal: TerminalType) {
-//        var scriptPath: URL
-//        if terminal == .terminal,
-//            let newOption = DefaultsManager.shared.getNewOption(.terminal),
-//            newOption == .tab {
-//            guard let fileScriptPath = fileScriptPath(fileName: terminal.rawValue + "-tab") else { return }
-//            scriptPath = fileScriptPath
-//        } else {
-//            guard let fileScriptPath = fileScriptPath(fileName: terminal.rawValue) else { return }
-//            scriptPath = fileScriptPath
-//        }
-//        guard FileManager.default.fileExists(atPath: scriptPath.path) else { return }
-//        guard let script = try? NSUserAppleScriptTask(url: scriptPath) else { return }
-//        script.execute(completionHandler: nil)
-//    }
-//
-//    func openEditor(_ editor: EditorType) {
-//        if (editor == .vscode) {
-//            var path = "open -a Visual\\ Studio\\ Code"
-//            if let items = FIFinderSyncController.default().selectedItemURLs(), items.count > 0 {
-//                items.forEach { (url) in
-//                    path += " \(url.path.specialCharEscaped2)"
-//                }
-//            } else if let url = FIFinderSyncController.default().targetedURL() {
-//                path = url.path.specialCharEscaped2
-//            } else {
-//                return
-//            }
-//            let appleScript = try! NSUserAppleScriptTask(url: fileScriptPath(fileName: editor.rawValue)!)
-//            appleScript.execute(withAppleEvent: getScriptEvent(functionName: "openVSCode", path)) { (appleEvent, error) in
-//                if let error = error {
-//                    print(error)
-//                }
-//            }
-//        } else {
-//            guard let scriptPath = fileScriptPath(fileName: editor.rawValue) else { return }
-//            guard FileManager.default.fileExists(atPath: scriptPath.path) else { return }
-//            guard let script = try? NSUserAppleScriptTask(url: scriptPath) else { return }
-//            script.execute(completionHandler: nil)
-//        }
-//    }
-    
     // MARK: - Menu Actions
     
     @objc func openDefaultTerminal() {
-        guard let terminal = DefaultsManager.shared.defaultTerminal else { return }
+        SharedPreferences.refreshExtension()
+        let terminal = DefaultsManager.shared.defaultTerminal ?? SupportedApps.terminal.app
         open(terminal)
     }
     
     @objc func openDefaultEditor() {
-        guard let editor = DefaultsManager.shared.defaultEditor else { return }
+        SharedPreferences.refreshExtension()
+        let editor = DefaultsManager.shared.defaultEditor ?? SupportedApps.textEdit.app
         open(editor)
     }
     
     @objc func customMenuItemClicked(_ sender: NSMenuItem) {
+        SharedPreferences.refreshExtension()
         guard let customApps = DefaultsManager.shared.customMenuOptions else { return }
+        if sender.tag >= 0 && sender.tag < customApps.count,
+           customApps[sender.tag].name == sender.title {
+            open(customApps[sender.tag])
+            return
+        }
         let appName = sender.title
-        for app in customApps {
-            if app.name == appName {
-                open(app)
-                break
-            }
+        for app in customApps where app.name == appName {
+            open(app)
+            break
         }
     }
     
     @objc func copyPathToClipboard() {
-        let urls = getSelectedPathsFromFinder()
+        SharedPreferences.refreshExtension()
+        let urls = getSelectedPathsFromFinder().map { $0.resolvingFinderAlias() }
         var paths = urls.map { $0.path }
         if DefaultsManager.shared.isPathEscaped {
             paths = paths.map { $0.specialCharEscaped() }

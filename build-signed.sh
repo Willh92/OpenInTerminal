@@ -49,6 +49,7 @@ EXPORT_DIR="export"
 PRODUCTS="$DERIVED/Build/Products/$CONFIG"
 EXT_ENT="OpenInTerminalFinderExtension/OpenInTerminalFinderExtension.entitlements"
 HELPER="OpenInTerminalHelper.app"
+HELPER_ENT="OpenInTerminalHelper/OpenInTerminalHelper.entitlements"
 
 NOTARY_PROFILE="${NOTARY_PROFILE:-OpenInTerminal-notary}"
 SKIP_NOTARIZE="${SKIP_NOTARIZE:-0}"
@@ -104,7 +105,11 @@ sign() {  # $1 = .app bundle, $2 = app entitlements
   done
   # nested apps (e.g. the login-item helper)
   find "$app" -mindepth 1 -type d -name "*.app" -print0 | while IFS= read -r -d '' sub; do
-    codesign "${common[@]}" "$sub"
+    if [[ "$(basename "$sub")" == "$HELPER" && -f "$HELPER_ENT" ]]; then
+      codesign "${common[@]}" --entitlements "$HELPER_ENT" "$sub"
+    else
+      codesign "${common[@]}" "$sub"
+    fi
   done
   codesign "${common[@]}" --entitlements "$ent" "$app"
 }
@@ -122,6 +127,8 @@ for pair in "${TARGETS[@]}"; do
     -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
     -destination 'generic/platform=macOS' \
+    ARCHS="arm64 x86_64" \
+    ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO \
     build >/dev/null
 

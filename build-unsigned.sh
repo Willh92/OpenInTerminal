@@ -22,6 +22,7 @@ EXPORT_DIR="export"
 PRODUCTS="$DERIVED/Build/Products/$CONFIG"
 EXT_ENT="OpenInTerminalFinderExtension/OpenInTerminalFinderExtension.entitlements"
 HELPER="OpenInTerminalHelper.app"
+HELPER_ENT="OpenInTerminalHelper/OpenInTerminalHelper.entitlements"
 
 # scheme:app-entitlements pairs
 TARGETS=(
@@ -44,9 +45,13 @@ adhoc_sign() {  # $1 = .app bundle, $2 = app entitlements
   find "$app" -type d -name "*.appex" -print0 | while IFS= read -r -d '' ext; do
     codesign --force --sign - --entitlements "$EXT_ENT" "$ext"
   done
-  # nested apps (e.g. the login-item helper); signed plain ad-hoc
+  # nested apps (e.g. the login-item helper)
   find "$app" -mindepth 1 -type d -name "*.app" -print0 | while IFS= read -r -d '' sub; do
-    codesign --force --sign - "$sub"
+    if [[ "$(basename "$sub")" == "$HELPER" && -f "$HELPER_ENT" ]]; then
+      codesign --force --sign - --entitlements "$HELPER_ENT" "$sub"
+    else
+      codesign --force --sign - "$sub"
+    fi
   done
   codesign --force --sign - --entitlements "$ent" "$app"
 }
@@ -58,14 +63,21 @@ for pair in "${TARGETS[@]}"; do
   scheme="${pair%%:*}"
   ent="${pair#*:}"
   echo "==> Building $scheme (unsigned)"
-  xcodebuild \
+  build_log="/tmp/xcodebuild-${scheme}.log"
+  if ! xcodebuild \
     -workspace "$WORKSPACE" \
     -scheme "$scheme" \
     -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
     -destination 'generic/platform=macOS' \
+    ARCHS="arm64 x86_64" \
+    ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO \
-    build >/dev/null
+    build >"$build_log" 2>&1; then
+    echo "!! xcodebuild failed for $scheme (last 200 lines):" >&2
+    tail -n 200 "$build_log" >&2
+    exit 1
+  fi
 
   app="$PRODUCTS/$scheme.app"
 

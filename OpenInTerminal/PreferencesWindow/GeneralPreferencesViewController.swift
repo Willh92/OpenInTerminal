@@ -81,7 +81,7 @@ class GeneralPreferencesViewController: PreferencesViewController {
     // MARK: Refresh UI
     
     func refreshButtonState() {
-        let isLaunchAtLogin = DefaultsManager.shared.isLaunchAtLogin
+        let isLaunchAtLogin = LaunchAtLoginManager.isEnabled
         launchButton.state = isLaunchAtLogin ? .on : .off
         
         let isHideStatusItem = DefaultsManager.shared.isHideStatusItem
@@ -124,19 +124,11 @@ class GeneralPreferencesViewController: PreferencesViewController {
             defaultTerminalButton.addItem(withTitle: $0.name)
         }
         installedTerminals = terminals
-//        Constants.allTerminals.forEach { terminal in
-//            var isInstalled = allInstalledApps.contains(terminal.name)
-//            if terminal == .terminal {
-//                isInstalled = true
-//            }
-//            if isInstalled {
-//                defaultTerminalButton.addItem(withTitle: terminal.rawValue)
-//            }
-//        }
-//
         if let defaultTerminal = DefaultsManager.shared.defaultTerminal {
             let index = defaultTerminalButton.indexOfItem(withTitle: defaultTerminal.name)
-            defaultTerminalButton.selectItem(at: index)
+            if index >= 0 {
+                defaultTerminalButton.selectItem(at: index)
+            }
         }
     }
     
@@ -147,11 +139,6 @@ class GeneralPreferencesViewController: PreferencesViewController {
         editors = editors.filter {
             allInstalledApps.contains($0.name)
         }
-//        // add custom terminals
-//        let customEditors = DefaultsManager.shared.customApps?.filter { $0.type == .editor }
-//        if let customEditors = customEditors {
-//            editors += customEditors
-//        }
         // sort
         editors.sort {
             $0.name.localizedCaseInsensitiveCompare($1.name) == ComparisonResult.orderedAscending
@@ -160,19 +147,11 @@ class GeneralPreferencesViewController: PreferencesViewController {
             defaultEditorButton.addItem(withTitle: $0.name)
         }
         installedEditors = editors
-//        Constants.allEditors.forEach { editor in
-//            var isInstalled = allInstalledApps.contains(editor.fullName)
-//            if editor == .textEdit {
-//                isInstalled = true
-//            }
-//            if isInstalled {
-//                defaultEditorButton.addItem(withTitle: editor.rawValue)
-//            }
-//        }
-//
         if let defaultEditor = DefaultsManager.shared.defaultEditor {
             let index = defaultEditorButton.indexOfItem(withTitle: defaultEditor.name)
-            defaultEditorButton.selectItem(at: index)
+            if index >= 0 {
+                defaultEditorButton.selectItem(at: index)
+            }
         }
     }
     
@@ -180,16 +159,16 @@ class GeneralPreferencesViewController: PreferencesViewController {
     
     @IBAction func launchButtonClicked(_ sender: NSButton) {
         let isLaunch = launchButton.state == .on
-        DefaultsManager.shared.isLaunchAtLogin = isLaunch
-        SMLoginItemSetEnabled(Constants.Id.LauncherApp as CFString, isLaunch)
+        LaunchAtLoginManager.setEnabled(isLaunch)
     }
     
     @IBAction func hideStatusItemButtonTapped(_ sender: NSButton) {
         let isHide = hideStatusItemButton.state == .on
         DefaultsManager.shared.isHideStatusItem = isHide
 
-        let appDelegate = NSApplication.shared.delegate as! AppDelegate
-        appDelegate.setStatusItemVisible()
+        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+            appDelegate.setStatusItemVisible()
+        }
     }
     
     @IBAction func hideContextMenuItemsButtonTapped(_ sender: NSButton) {
@@ -207,8 +186,9 @@ class GeneralPreferencesViewController: PreferencesViewController {
         DefaultsManager.shared.isQuickToggle = isQuickToggle
         chooseToggleActionButton.isEnabled = isQuickToggle
 
-        let appDelegate = NSApplication.shared.delegate as! AppDelegate
-        appDelegate.setStatusToggle()
+        if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+            appDelegate.setStatusToggle()
+        }
         logw("Quick Toggle set to \(sender.state.rawValue)")
     }
     
@@ -217,6 +197,7 @@ class GeneralPreferencesViewController: PreferencesViewController {
         
         let itemTitles = sender.itemTitles
         let index = sender.indexOfSelectedItem
+        guard index >= 0 && index < itemTitles.count else { return }
         let title = itemTitles[index]
         installedTerminals.forEach {
             if $0.name == title {
@@ -231,24 +212,13 @@ class GeneralPreferencesViewController: PreferencesViewController {
         
         let itemTitles = sender.itemTitles
         let index = sender.indexOfSelectedItem
+        guard index >= 0 && index < itemTitles.count else { return }
         let title = itemTitles[index]
         installedEditors.forEach {
             if $0.name == title {
                 DefaultsManager.shared.defaultEditor = $0
             }
         }
-        
-//        let itemTitles = sender.itemTitles
-//        let index = sender.indexOfSelectedItem
-//        let title = itemTitles[index]
-//
-//        if title == Constants.none {
-//            DefaultsManager.shared.removeDefaultEditor()
-//        }
-//
-//        if let editor = EditorType(rawValue: title) {
-//            DefaultsManager.shared.defaultEditor = editor
-//        }
     }
     
     @objc func quickToggleTerminalClicked(_ sender: NSMenuItem) {

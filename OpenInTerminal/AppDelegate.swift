@@ -27,7 +27,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SharedPreferences.startHost()
         DefaultsManager.shared.firstSetup()
+        SharedPreferences.publish()
+        LaunchAtLoginManager.syncOnLaunch()
         addObserver()
         terminateOpenInTerminalHelper()
         setStatusItemIcon()
@@ -51,6 +54,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        SharedPreferences.publish()
         NSStatusBar.system.removeStatusItem(statusItem)
         
         removeObserver()
@@ -107,7 +111,7 @@ extension AppDelegate {
     }
     
     @objc func statusBarButtonClicked(sender: NSStatusBarButton) {
-        let event = NSApp.currentEvent!
+        guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseDown || event.type == .rightMouseUp
             || event.modifierFlags.contains(.control)
         {
@@ -134,7 +138,8 @@ extension AppDelegate {
         }
         
         if isRunning {
-            LaunchNotifier.postNotification(.terminateApp, object: Bundle.main.bundleIdentifier!)
+            let hostId = Bundle.main.bundleIdentifier ?? "wang.jianing.app.OpenInTerminal"
+            LaunchNotifier.postNotification(.terminateApp, object: hostId)
         }
     }
     
@@ -229,14 +234,15 @@ extension AppDelegate {
     
     @objc func copyPathToClipboard() {
         do {
-            var urls = try FinderManager.shared.getFullUrlsToFrontFinderWindowOrSelectedFile()
-            if urls.count == 0 {
+            var paths = try FinderManager.shared.getFullPathsToFrontFinderWindowOrSelectedFile()
+            if paths.isEmpty {
                 // No Finder window and no file selected.
-                let homePath = NSHomeDirectory()
-                guard let homeUrl = URL(string: homePath) else { return }
-                urls.append(homeUrl.appendingPathComponent("Desktop"))
+                guard let desktopPath = FinderManager.shared.getDesktopPath() else { return }
+                paths.append(desktopPath)
             }
-            let paths = urls.map { $0.path }
+            if DefaultsManager.shared.isPathEscaped {
+                paths = paths.map { $0.specialCharEscaped() }
+            }
             let pathString = paths.joined(separator: "\n")
             // Set string
             NSPasteboard.general.clearContents()
@@ -273,21 +279,18 @@ extension AppDelegate {
     // MARK: - Global Shortcuts
     
     func bindShortcuts() {
-        terminalShortcutAction = ShortcutAction(keyPath: Constants.Key.defaultTerminalShortcut, of: Defaults) { _ in
-            let appDelegate = NSApplication.shared.delegate as! AppDelegate
-            appDelegate.openDefaultTerminal()
+        terminalShortcutAction = ShortcutAction(keyPath: Constants.Key.defaultTerminalShortcut, of: Defaults) { [weak self] _ in
+            self?.openDefaultTerminal()
             return true
         }
         
-        editorShortcutAction = ShortcutAction(keyPath: Constants.Key.defaultEditorShortcut, of: Defaults) { _ in
-            let appDelegate = NSApplication.shared.delegate as! AppDelegate
-            appDelegate.openDefaultEditor()
+        editorShortcutAction = ShortcutAction(keyPath: Constants.Key.defaultEditorShortcut, of: Defaults) { [weak self] _ in
+            self?.openDefaultEditor()
             return true
         }
         
-        copyPathShortcutAction = ShortcutAction(keyPath: Constants.Key.copyPathShortcut, of: Defaults) { _ in
-            let appDelegate = NSApplication.shared.delegate as! AppDelegate
-            appDelegate.copyPathToClipboard()
+        copyPathShortcutAction = ShortcutAction(keyPath: Constants.Key.copyPathShortcut, of: Defaults) { [weak self] _ in
+            self?.copyPathToClipboard()
             return true
         }
         
@@ -297,7 +300,8 @@ extension AppDelegate {
     func updateShortcutRegistration() {
         let shouldRegister: Bool
         if DefaultsManager.shared.shouldOnlyActivateShortcutsInFinder {
-            shouldRegister = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
+            let frontBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            shouldRegister = frontBundleId?.caseInsensitiveCompare("com.apple.finder") == .orderedSame
         } else {
             shouldRegister = true
         }
@@ -305,13 +309,13 @@ extension AppDelegate {
         guard shouldRegister != areShortcutsRegistered else { return }
         
         if shouldRegister {
-            if let action = terminalShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
-            if let action = editorShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
-            if let action = copyPathShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
+            if let action = terminalShortcutAction { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
+            if let action = editorShortcutAction { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
+            if let action = copyPathShortcutAction { GlobalShortcutMonitor.shared.addAction(action, forKeyEvent: .down) }
         } else {
-            if let action = terminalShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
-            if let action = editorShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
-            if let action = copyPathShortcutAction, action.shortcut != nil { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
+            if let action = terminalShortcutAction { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
+            if let action = editorShortcutAction { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
+            if let action = copyPathShortcutAction { GlobalShortcutMonitor.shared.removeAction(action, forKeyEvent: .down) }
         }
         
         areShortcutsRegistered = shouldRegister

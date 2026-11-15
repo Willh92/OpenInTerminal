@@ -73,7 +73,9 @@ open class Log {
             let dateStr = dateFormatter.string(from: Date())
             let writeText = "[\(dateStr)]: \(text)\n"
             fileHandle.seekToEndOfFile()
-            fileHandle.write(writeText.data(using: String.Encoding.utf8)!)
+            if let data = writeText.data(using: String.Encoding.utf8) {
+                fileHandle.write(data)
+            }
             fileHandle.closeFile()
             if printToConsole {
                 print(writeText, terminator: "")
@@ -142,7 +144,7 @@ open class Log {
         #endif
         if !fileManager.fileExists(atPath: path) && path != ""  {
             do {
-                try fileManager.createDirectory(atPath: path, withIntermediateDirectories: false, attributes: nil)
+                try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: nil)
             } catch _ {
             }
         }

@@ -60,14 +60,35 @@ public extension String {
 // MARK: - URL
 
 public extension URL {
+
+    /// Normalizes file reference URLs and resolves Finder Alias files without mounting
+    /// network volumes or displaying UI (#156).
+    func resolvingFinderAlias() -> URL {
+        let standardized = (self as NSURL).filePathURL ?? self
+        guard let values = try? standardized.resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]),
+              values.isAliasFile == true,
+              values.isSymbolicLink != true else {
+            return standardized
+        }
+        if let resolved = try? URL(
+            resolvingAliasFileAt: standardized,
+            options: [.withoutUI, .withoutMounting]
+        ) {
+            return (resolved as NSURL).filePathURL ?? resolved
+        }
+        return standardized
+    }
     
     /// Get the directory part of the URL by removing the last part if it's a file.
     mutating func getDirectory() {
+        self = self.resolvingFinderAlias()
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: self.path, isDirectory: &isDirectory) {
             if !isDirectory.boolValue {
                 self = self.deletingLastPathComponent()
             }
+        } else if !self.hasDirectoryPath {
+            self = self.deletingLastPathComponent()
         }
     }
     

@@ -12,15 +12,9 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationDidFinishLaunching(_ aNotification: Notification) {
-        let mainAppIdentifier = "wang.jianing.OpenInTerminal"
-        let running = NSWorkspace.shared.runningApplications
-        var alreadyRunning = false
-        
-        for app in running {
-            if app.bundleIdentifier == mainAppIdentifier {
-                alreadyRunning = true
-                break
-            }
+        let mainAppIdentifier = "wang.jianing.app.OpenInTerminal"
+        let alreadyRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == mainAppIdentifier
         }
         
         if !alreadyRunning {
@@ -29,16 +23,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                        notification: .terminateApp,
                                        object: mainAppIdentifier)
             
-            let path = Bundle.main.bundlePath as NSString
-            var components = path.pathComponents
-            components.removeLast()
-            components.removeLast()
-            components.removeLast()
-            components.append("MacOS")
-            components.append("OpenInTerminal")
-            
-            let newPath = NSString.path(withComponents: components)
-            NSWorkspace.shared.launchApplication(newPath)
+            // .../OpenInTerminal.app/Contents/Library/LoginItems/OpenInTerminalHelper.app -> .../OpenInTerminal.app
+            let mainAppURL = URL(fileURLWithPath: Bundle.main.bundlePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            let config = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.openApplication(at: mainAppURL, configuration: config) { _, _ in
+                DispatchQueue.main.async {
+                    NSApp.terminate(nil)
+                }
+            }
         } else {
             NSApp.terminate(self)
         }

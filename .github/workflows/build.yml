@@ -1,0 +1,127 @@
+name: Build & Test macOS Packages
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-and-package:
+    name: Build Universal Release & Test (macOS 26 / Xcode 26)
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode 26
+        run: |
+          if [[ -d "/Applications/Xcode_26.6.app" ]]; then
+            sudo xcode-select -s "/Applications/Xcode_26.6.app"
+          fi
+          sw_vers
+          xcodebuild -version
+
+      - name: Build and ad-hoc sign all apps (Universal arm64 + x86_64)
+        run: |
+          chmod +x build-unsigned.sh Tests/SharedPreferences/run.sh
+          ./build-unsigned.sh
+
+      - name: Run multi-process regression tests
+        run: ./Tests/SharedPreferences/run.sh
+
+      - name: Verify bundle structure, architectures, icons, and entitlements
+        run: |
+          set -euo pipefail
+          for app in export/OpenInTerminal.app export/OpenInTerminal-Lite.app export/OpenInEditor-Lite.app; do
+            echo "==> Validating $app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            plutil -lint "$app/Contents/Info.plist"
+            bin_name="$(basename "$app" .app)"
+            archs="$(lipo -archs "$app/Contents/MacOS/$bin_name")"
+            echo "    Architectures: $archs"
+            [[ "$archs" == *"arm64"* && "$archs" == *"x86_64"* ]]
+            [[ -f "$app/Contents/Resources/Assets.car" ]]
+            if compgen -G "$app/Contents/Frameworks/libswift*.dylib" >/dev/null; then
+              echo "!! Unexpected legacy embedded libswift*.dylib found in $app" >&2
+              exit 1
+            fi
+          done
+
+          # Host app must NOT declare NSExtension; Finder extension MUST declare NSExtension
+          if /usr/libexec/PlistBuddy -c "Print :NSExtension" export/OpenInTerminal.app/Contents/Info.plist >/dev/null 2>&1; then
+            echo "!! Host Info.plist must not contain NSExtension" >&2
+            exit 1
+          fi
+          /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" \
+            export/OpenInTerminal.app/Contents/PlugIns/OpenInTerminalFinderExtension.appex/Contents/Info.plist | grep -qx "com.apple.FinderSync"
+
+          # Verify external drive sidebar icon symbol key (#249)
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleSymbolName" \
+            export/OpenInTerminal.app/Contents/PlugIns/OpenInTerminalFinderExtension.appex/Contents/Info.plist | grep -qx "externaldrive"
+
+          # Verify App Group entitlement is absent so macOS 26/27 cfprefsd/TCC never prompts (#279, #294)
+          if codesign -d --entitlements :- export/OpenInTerminal.app 2>/dev/null | grep -q "com.apple.security.application-groups"; then
+            echo "!! Unexpected application-groups entitlement on host app" >&2
+            exit 1
+          fi
+          if codesign -d --entitlements :- export/OpenInTerminal.app/Contents/PlugIns/OpenInTerminalFinderExtension.appex 2>/dev/null | grep -q "com.apple.security.application-groups"; then
+            echo "!! Unexpected application-groups entitlement on Finder extension" >&2
+            exit 1
+          fi
+
+      - name: Package .zip archives and verify round-trip extraction
+        run: |
+          set -euo pipefail
+          mkdir -p dist roundtrip
+
+          ditto -c -k --sequesterRsrc --keepParent export/OpenInTerminal.app dist/OpenInTerminal-2.3.10-macos-fix.zip
+          ditto -c -k --sequesterRsrc --keepParent export/OpenInTerminal-Lite.app dist/OpenInTerminal-Lite-1.2.9-macos-fix.zip
+          ditto -c -k --sequesterRsrc --keepParent export/OpenInEditor-Lite.app dist/OpenInEditor-Lite-1.2.9-macos-fix.zip
+
+          for z in dist/*.zip; do
+            size="$(stat -f '%z' "$z")"
+            echo "==> $z : $size bytes"
+            ditto -x -k "$z" roundtrip/
+          done
+
+          for app in roundtrip/OpenInTerminal.app roundtrip/OpenInTerminal-Lite.app roundtrip/OpenInEditor-Lite.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+
+          shasum -a 256 dist/*.zip | tee dist/SHA256SUMS.txt
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenInTerminal-macOS-Packages
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  verify-macos27:
+    name: Verify Build & Runtime on macOS 27 / Xcode 27
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show macOS 27 & Xcode 27 environment
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Build all apps with Xcode 27 on macOS 27
+        run: |
+          chmod +x build-unsigned.sh Tests/SharedPreferences/run.sh
+          ./build-unsigned.sh
+
+      - name: Run regression suite on live macOS 27 runtime
+        run: ./Tests/SharedPreferences/run.sh

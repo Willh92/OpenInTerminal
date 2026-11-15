@@ -9,13 +9,18 @@
 import Foundation
 import OpenInTerminalCore
 
-/// Install AppleScripts to $HOME/Library/Application Scripts/wang.jianing.app.OpenInTerminalFinderExtension
+/// Install AppleScripts to $HOME/Library/Application Scripts/<FinderExtensionBundleID>
 func checkScripts() throws {
-    guard var scriptFolderPath = try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
-        throw OITMError.cannotAccessPath("$HOME/Library/Application Scripts/wang.jianing.app.OpenInTerminal")
+    let finderExScriptPath: URL
+    if let sharedDir = SharedPreferences.sharedSettingsURL?.deletingLastPathComponent() {
+        finderExScriptPath = sharedDir
+    } else {
+        guard var scriptFolderPath = try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            throw OITMError.cannotAccessPath("$HOME/Library/Application Scripts/\(Constants.Id.FinderExtension)")
+        }
+        scriptFolderPath.deleteLastPathComponent()
+        finderExScriptPath = scriptFolderPath.appendingPathComponent(Constants.Id.FinderExtension)
     }
-    scriptFolderPath.deleteLastPathComponent()
-    let finderExScriptPath = scriptFolderPath.appendingPathComponent(Constants.Id.FinderExtension)
     if !FileManager.default.fileExists(atPath: finderExScriptPath.path) {
         try FileManager.default.createDirectory(atPath: finderExScriptPath.path,
                                                 withIntermediateDirectories: true,

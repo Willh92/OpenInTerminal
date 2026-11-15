@@ -9,12 +9,15 @@
 import Cocoa
 import Foundation
 import OpenInTerminalCore
+import ServiceManagement
 
 struct Constants {
     
     struct Id {
         static let LauncherApp = "wang.jianing.app.OpenInTerminalHelper"
-        static let FinderExtension = "wang.jianing.app.OpenInTerminal.OpenInTerminalFinderExtension"
+        static var FinderExtension: String {
+            return SharedPreferences.extensionBundleIdentifier
+        }
         static let CustomAppCell = NSUserInterfaceItemIdentifier(rawValue: "customAppCell")
         static let CustomMenuCell = NSUserInterfaceItemIdentifier(rawValue: "customMenuCell")
         static let CustomInputViewController = "CustomInputViewController"
@@ -30,6 +33,51 @@ struct Constants {
     }
     
     static let PreferencesStoryboard = NSStoryboard(name: "Preferences", bundle: nil)
+}
+
+enum LaunchAtLoginManager {
+
+    static var isEnabled: Bool {
+        if #available(macOS 13.0, *) {
+            let status = SMAppService.mainApp.status
+            if status == .enabled {
+                return true
+            }
+            return DefaultsManager.shared.isLaunchAtLogin && status == .requiresApproval
+        } else {
+            return DefaultsManager.shared.isLaunchAtLogin
+        }
+    }
+
+    static func setEnabled(_ enabled: Bool) {
+        DefaultsManager.shared.isLaunchAtLogin = enabled
+        if #available(macOS 13.0, *) {
+            _ = SMLoginItemSetEnabled(Constants.Id.LauncherApp as CFString, false)
+            do {
+                if enabled {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                logw("SMAppService.mainApp \(enabled ? "register" : "unregister") failed: \(error.localizedDescription)")
+            }
+        } else {
+            _ = SMLoginItemSetEnabled(Constants.Id.LauncherApp as CFString, enabled)
+        }
+    }
+
+    static func syncOnLaunch() {
+        guard #available(macOS 13.0, *) else { return }
+        if DefaultsManager.shared.isLaunchAtLogin && SMAppService.mainApp.status == .notRegistered {
+            do {
+                _ = SMLoginItemSetEnabled(Constants.Id.LauncherApp as CFString, false)
+                try SMAppService.mainApp.register()
+            } catch {
+                logw("SMAppService migration on launch failed: \(error.localizedDescription)")
+            }
+        }
+    }
 }
 
 extension NSImage {

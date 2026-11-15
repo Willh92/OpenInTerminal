@@ -56,18 +56,22 @@ class AdvancedPreferencesViewController: PreferencesViewController {
             print("Cancel Resetting User Preferences")
         case .alertSecondButtonReturn:
             logw("Reset User Preferences")
-            SMLoginItemSetEnabled(Constants.Id.LauncherApp as CFString, false)
+            LaunchAtLoginManager.setEnabled(false)
             DefaultsManager.shared.removeAllUserDefaults()
             DefaultsManager.shared.firstSetup()
-            let appDelegate = NSApplication.shared.delegate as! AppDelegate
-            appDelegate.setStatusToggle()
+            SharedPreferences.publish()
+            if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+                appDelegate.setStatusItemVisible()
+                appDelegate.setStatusToggle()
+            }
         default:
             print("Cancel Resetting User Preferences")
         }
     }
     
     @IBAction func quitButtonClicked(_ sender: NSButton) {
-        LaunchNotifier.postNotification(.terminateApp, object: Bundle.main.bundleIdentifier!)
+        let hostId = Bundle.main.bundleIdentifier ?? "wang.jianing.app.OpenInTerminal"
+        LaunchNotifier.postNotification(.terminateApp, object: hostId)
         NSApp.terminate(self)
     }
     

@@ -13,7 +13,7 @@ import OpenInTerminalCore
 do {
 
     if let terminalName = DefaultsManager.shared.liteDefaultTerminal {
-        let terminal = App(name: terminalName, type: .terminal)
+        let terminal = SupportedApps.from(name: terminalName)?.app ?? App(name: terminalName, type: .terminal)
         try terminal.openOutsideSandbox()
     } else {
         guard let selectedTerminal = pickTerminal() else {
@@ -111,8 +111,7 @@ private extension SupportedApps {
 
     /// The real icon of the copy installed on disk, if it can be located.
     var diskIcon: NSImage? {
-        if !bundleId.isEmpty,
-           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+        if let url = installedApplicationURL {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
         // Some supported apps ship without a stable bundle id; look them up by name.
@@ -125,6 +124,6 @@ private extension SupportedApps {
 
     /// The icon bundled with the app (from `Icons.xcassets`), named after the app.
     var bundledIcon: NSImage? {
-        return NSImage(named: name)
+        return NSImage(named: name) ?? NSImage(named: name.lowercased())
     }
 }

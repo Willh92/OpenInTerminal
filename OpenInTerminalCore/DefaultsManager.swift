@@ -6,6 +6,7 @@
 //  Copyright © 2019 Jianing Wang. All rights reserved.
 //
 
+import AppKit
 import Foundation
 
 public class DefaultsManager {
@@ -155,6 +156,8 @@ public class DefaultsManager {
     public func getNewOption(_ app: SupportedApps) -> NewOptionType? {
         var option: String?
         switch app {
+        case .terminal:
+            option = Defaults[.terminalNewOption]
         case .iTerm:
             option = Defaults[.iTermNewOption]
         default:
@@ -165,17 +168,20 @@ public class DefaultsManager {
     
     public func setNewOption(_ app: SupportedApps, _ newOption: NewOptionType) {
         switch app {
+        case .terminal:
+            Defaults[.terminalNewOption] = newOption.rawValue
         case .iTerm:
             Defaults[.iTermNewOption] = newOption.rawValue
             let option = newOption == .window ? "true" : "false"
             let source = """
             do shell script "defaults write \(SupportedApps.iTerm.bundleId) OpenFileInNewWindows -bool \(option)"
             """
-            let script = NSAppleScript(source: source)!
-            var error: NSDictionary?
-            script.executeAndReturnError(&error)
-            if error != nil {
-                logw("Setting iTerm new option failed: \(String(describing: error))")
+            if let script = NSAppleScript(source: source) {
+                var error: NSDictionary?
+                script.executeAndReturnError(&error)
+                if error != nil {
+                    logw("Setting iTerm new option failed: \(String(describing: error))")
+                }
             }
         default:
             return
@@ -194,7 +200,10 @@ public class DefaultsManager {
         }
         
         set {
-            guard let newValue = newValue else { return }
+            guard let newValue = newValue else {
+                Defaults[.customMenuOptions] = nil
+                return
+            }
             do {
                 let data = try encoder.encode(newValue)
                 Defaults[.customMenuOptions] = data
@@ -258,7 +267,7 @@ public class DefaultsManager {
             }
         case .original:
             if SupportedApps.isSupported(app),
-               let icon = NSImage(named: app.name) {
+               let icon = NSImage(named: app.name) ?? NSImage(named: app.name.lowercased()) {
                 return icon
             }
             if app.type == .terminal {
@@ -315,6 +324,9 @@ public class DefaultsManager {
             return neovimCommand
         } else if SupportedApps.is(app, is: .gitKraken) {
             return gitKrakenCommand
+        } else if let supported = SupportedApps.from(name: app.name),
+                  let resolvedBundleId = supported.resolvedBundleId {
+            return "open -b \(resolvedBundleId)"
         } else {
             return "open -a \(app.name.nameSpaceEscaped(escapeCount))"
         }
@@ -341,6 +353,21 @@ public class DefaultsManager {
         } else if SupportedApps.is(app, is: .gitKraken) {
             command = gitKrakenCommand
         } else {
+            // Prefer Launch Services bundle-ID lookup when available so Community Edition /
+            // variant bundle names (e.g. "IntelliJ IDEA Community Edition.app", "iTerm2.app",
+            // or apps outside /Applications) launch reliably.
+            if let supported = SupportedApps.from(name: app.name),
+               let resolvedBundleId = supported.resolvedBundleId {
+                return ["-b", resolvedBundleId]
+            }
+            if let bundleId = app.bundleId, !bundleId.isEmpty,
+               NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) != nil {
+                return ["-b", bundleId]
+            }
+            if let appPath = app.path, !appPath.isEmpty,
+               FileManager.default.fileExists(atPath: appPath) {
+                return ["-a", appPath]
+            }
             // Generic case (`open -a <name>`): keep the app name as a single
             // argument so names containing spaces are preserved without escaping.
             return ["-a", app.name]
@@ -374,13 +401,22 @@ public class DefaultsManager {
         isCustomMenuApplyToContext = false
         customMenuIconOption = .no
         isPathEscaped = true
-        Defaults.synchronize()
+        SharedPreferences.publish()
     }
     
     public func removeAllUserDefaults() {
         logw("Remove all UserDefaults")
-        Defaults.removePersistentDomain(forName: Constants.Id.Group)
-        Defaults.synchronize()
+        if let domain = Bundle.main.bundleIdentifier, !domain.isEmpty {
+            Defaults.removePersistentDomain(forName: domain)
+        }
+        for key in SharedPreferences.sharedKeys {
+            Defaults.removeObject(forKey: key)
+        }
+        Defaults.removeObject(forKey: "OIT_DefaultTerminalShortcut")
+        Defaults.removeObject(forKey: "OIT_DefaultEditorShortcut")
+        Defaults.removeObject(forKey: "OIT_CopyPathShortcut")
+        Defaults.set(true, forKey: SharedPreferences.legacyMigrationKey)
+        SharedPreferences.publish()
     }
     
 }

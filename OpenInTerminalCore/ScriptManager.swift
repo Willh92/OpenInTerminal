@@ -31,10 +31,7 @@ public class ScriptManager {
             repeat with theArgument in argv
                 set theCommand to theCommand & quoted form of (theArgument as text) & " "
             end repeat
-            tell application "Finder"
-                activate
-                do shell script theCommand
-            end tell
+            do shell script theCommand
         end openApp
         """
         return script
@@ -47,16 +44,18 @@ public class ScriptManager {
     /// Open path in a new tab of Terminal
     public func getTerminalNewTabAppleScript() -> String {
         let script = """
-        on openApp(command)
+        on openApp(argv)
+            set thePath to item 1 of argv as text
+            set theCommand to "cd " & quoted form of thePath
             if not application "Terminal" is running then
                 tell application "Terminal"
-                    do script command
+                    do script theCommand
                     activate
                 end tell
             else
                 tell application "Terminal"
                     if not (exists window 1) then
-                        do script command
+                        do script theCommand
                         activate
                     else
                         activate
@@ -64,7 +63,7 @@ public class ScriptManager {
                         repeat while contents of selected tab of window 1 starts with linefeed
                             delay 0.01
                         end repeat
-                        do script command in window 1
+                        do script theCommand in window 1
                     end if
                 end tell
             end if
@@ -84,16 +83,20 @@ public class ScriptManager {
     
     /// Open path in a new tab of Terminal
     public func getTerminalNewTabAppleScript(url: URL) -> String {
+        let appleScriptPathLiteral = url.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
+        set theCommand to "cd " & quoted form of "\(appleScriptPathLiteral)"
         if not application "Terminal" is running then
             tell application "Terminal"
-                do script "cd \(url.path.terminalPathEscaped())"
+                do script theCommand
                 activate
             end tell
         else
             tell application "Terminal"
                 if not (exists window 1) then
-                    do script "cd \(url.path.terminalPathEscaped())"
+                    do script theCommand
                     activate
                 else
                     activate
@@ -101,7 +104,7 @@ public class ScriptManager {
                     repeat while contents of selected tab of window 1 starts with linefeed
                         delay 0.01
                     end repeat
-                    do script "cd \(url.path.terminalPathEscaped())" in window 1
+                    do script theCommand in window 1
                 end if
             end tell
         end if
@@ -113,7 +116,13 @@ public class ScriptManager {
     // MARK: - Utils
     
     public func getScriptURL(with name: String) -> URL? {
-        let scriptFolderURL = try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        if let sharedDir = SharedPreferences.sharedSettingsURL?.deletingLastPathComponent() {
+            return sharedDir
+                .appendingPathComponent(name)
+                .appendingPathExtension("scpt")
+        }
+        let shouldCreate = !SharedPreferences.isAppExtension
+        let scriptFolderURL = try? FileManager.default.url(for: .applicationScriptsDirectory, in: .userDomainMask, appropriateFor: nil, create: shouldCreate)
         guard let url = scriptFolderURL else { return nil }
         let fileURL = url
             .appendingPathComponent(name)
@@ -121,7 +130,7 @@ public class ScriptManager {
         return fileURL
     }
     
-    func getScriptEvent(functionName: String, arguments: [String]) -> NSAppleEventDescriptor {
+    public func getScriptEvent(functionName: String, arguments: [String]) -> NSAppleEventDescriptor {
         // The handler takes a single parameter that is itself a list of
         // argument strings. Build that inner list, delivering each argument as
         // a discrete descriptor so no shell-sensitive concatenation happens on

@@ -76,7 +76,8 @@ public class AppManager {
     }
     
     public static func getApplicationFileName(from path: String) -> String {
-        var rawName = FileManager().displayName(atPath: path).removingPercentEncoding!
+        let displayName = FileManager.default.displayName(atPath: path)
+        var rawName = displayName.removingPercentEncoding ?? displayName
         let lowercased = rawName.lowercased()
         if lowercased.hasSuffix(".app") {
             let start = rawName.startIndex
